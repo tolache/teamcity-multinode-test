@@ -5,9 +5,9 @@
 BIND_MOUT_ROOT=$HOME/teamcity-multinode-setup
 ## SQL server
 SQL_CONTAINER_NAME=mysql-server
-MYSQL_PASSWORD=123456789
+MYSQL_PASSWORD=your-secret-pw
 TC_DB_USER=teamcity
-TC_DB_PASSWORD=123456789
+TC_DB_PASSWORD=your-secret-pw
 TC_DB_NAME=teamcity
 MYSQL_CONTAINER_NAME=mysql-server
 MYSQL_SERVER_VOLUME=${BIND_MOUT_ROOT}/${SQL_CONTAINER_NAME}/
@@ -31,6 +31,7 @@ JDBC_DRIVER_DOWNLOAD_LINK=https://dev.mysql.com/get/Downloads/Connector-J/mysql-
 # NGINX
 NGINX_CONTAINER_NAME=nginx
 NGINX_CONFIG_PATH=${BIND_MOUT_ROOT}/nginx.conf
+PROXY_SERVER_NAMES="your-proxy-server your-proxy-server.example.com"
 
 # Create host volumes
 mkdir -p ${NFS_BIND_MOUNT}
@@ -84,8 +85,8 @@ docker network create --subnet=192.168.0.0/24 teamcity-network
 
 # Run TC Node 1
 docker run --privileged -u 0 -dit --name ${TC_NODE1_CONTAINER_NAME} \
+--network=teamcity-network \
 -e TEAMCITY_SERVER_OPTS="-Dteamcity.server.nodeId=${TC_NODE1_CONTAINER_NAME} -Dteamcity.server.rootURL=http://${TC_NODE1_CONTAINER_NAME}:8111 -Dteamcity.data.path=/data/teamcity_server/datadir -Dteamcity.node.data.path=/data/teamcity_server/node_datadir" \
--e TEAMCITY_STOP_WAIT_TIME=30 \
 -v ${TC_NODE1_DATA_VOLUME}:/data/teamcity_server/datadir \
 -v ${TC_NODE1_NODESPECIFIC_DIR}:/data/teamcity_server/node_datadir \
 -v ${TC_NODE1_LOGS_VOLUME}:/opt/teamcity/logs \
@@ -94,13 +95,103 @@ jetbrains/teamcity-server:${TC_VERSION}
 
 # Run TC Node 2
 docker run --privileged -u 0 -dit --name ${TC_NODE2_CONTAINER_NAME} \
+--network=teamcity-network \
 -e TEAMCITY_SERVER_OPTS="-Dteamcity.server.nodeId=${TC_NODE2_CONTAINER_NAME} -Dteamcity.server.rootURL=http://${TC_NODE2_CONTAINER_NAME}:8111 -Dteamcity.data.path=/data/teamcity_server/datadir -Dteamcity.node.data.path=/data/teamcity_server/node_datadir" \
--e TEAMCITY_STOP_WAIT_TIME=30 \
 -v ${TC_NODE2_DATA_VOLUME}:/data/teamcity_server/datadir \
 -v ${TC_NODE2_DATA_VOLUME}:/opt/teamcity/logs \
 -p ${TC_NODE2_PORT}:8111 \
 jetbrains/teamcity-server:${TC_VERSION}
 
-# Connect TC nodes to docker network
-docker network connect teamcity-network ${TC_NODE1_CONTAINER_NAME}
-docker network connect teamcity-network ${TC_NODE2_CONTAINER_NAME}
+# Create NGINX config file #
+echo "worker_processes  auto;
+user              www-data;
+
+events {
+    use           epoll;
+    worker_connections  128;
+}
+
+error_log         /var/log/nginx/error.log info;
+
+http {
+    server_tokens off;
+    include       mime.types;
+    charset       utf-8;
+    
+    access_log    /var/log/nginx/access.log  combined;
+    
+    upstream ${TC_NODE1_CONTAINER_NAME} {
+        server ${TC_NODE1_CONTAINER_NAME}:8111 max_fails=0;
+        server ${TC_NODE2_CONTAINER_NAME}:8111 backup;
+    }
+    upstream ${TC_NODE2_CONTAINER_NAME} {
+        server ${TC_NODE2_CONTAINER_NAME}:8111 max_fails=0;
+        server ${TC_NODE1_CONTAINER_NAME}:8111 backup;
+    }
+    
+    upstream web_requests {
+        server ${TC_NODE1_CONTAINER_NAME}:8111 max_fails=0;
+        server ${TC_NODE2_CONTAINER_NAME}:8111 backup;
+    }
+    
+    map \$http_cookie \$backend_cookie {
+        default \"${TC_NODE1_CONTAINER_NAME}\";
+        \"~*X-TeamCity-Node-Id-Cookie=(?<node_name>[^;]+)\" \$node_name;
+    }
+    
+    map \$http_user_agent \$is_agent {
+        default @users;
+        \"~*TeamCity Agent*\" @agents;
+    }
+    
+    map \$http_upgrade \$connection_upgrade { # WebSocket support
+       default upgrade;
+       '' '';
+    }
+    
+    server {
+        server_name   localhost ${PROXY_SERVER_NAMES};
+        listen        80;
+    
+        error_page    500 502 503 504  /50x.html;
+    
+        location      / {
+            try_files /dev/null \$is_agent;
+        }
+    	
+        location @agents {
+           proxy_pass http://\$backend_cookie;
+           proxy_next_upstream error timeout http_503 non_idempotent;
+           proxy_intercept_errors on;
+           proxy_set_header Host \$host:\$server_port;
+           proxy_redirect off;
+           proxy_set_header X-TeamCity-Proxy \"type=nginx; version=2021.2\";
+           proxy_set_header X-Forwarded-Host \$http_host; # necessary for proper absolute redirects and TeamCity CSRF check
+           proxy_set_header X-Forwarded-Proto \$scheme;
+           proxy_set_header X-Forwarded-For \$remote_addr;
+           proxy_set_header Upgrade \$http_upgrade; # WebSocket support
+           proxy_set_header Connection \$connection_upgrade; # WebSocket support
+        }
+        
+        location @users {
+           proxy_pass http://web_requests;
+           proxy_next_upstream error timeout http_503 non_idempotent;
+           proxy_intercept_errors on;
+           proxy_set_header Host \$host:\$server_port;
+           proxy_redirect off;
+           proxy_set_header X-TeamCity-Proxy \"type=nginx; version=2021.2\";
+           proxy_set_header X-Forwarded-Host \$http_host; # necessary for proper absolute redirects and TeamCity CSRF check
+           proxy_set_header X-Forwarded-Proto \$scheme;
+           proxy_set_header X-Forwarded-For \$remote_addr;
+           proxy_set_header Upgrade \$http_upgrade; # WebSocket support
+           proxy_set_header Connection \$connection_upgrade; # WebSocket support
+        }
+    }
+}" > ${NGINX_CONFIG_PATH}
+############################################
+
+# Run NGINX reverse proxy
+docker run --privileged -dit --name ${NGINX_CONTAINER_NAME} \
+-v ${NGINX_CONFIG_PATH}:/etc/nginx/nginx.conf:ro \
+--network=teamcity-network \
+-p 80:80 nginx
