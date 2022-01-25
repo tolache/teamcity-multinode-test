@@ -1,4 +1,10 @@
 # TeamCity Multinode Test
 This is an example of how to configure a TeamCity multinode setup on Ubuntu 18.04 with docker.  
-It will run two TeamCity nodes, MySQL server, and an NFS server, all in docker containers on the same host.  
+The setup includes 5 containers ran all on one host:
+
+1. NFS server;
+1. MySQL server;
+1. Two TeamCity nodes;
+1. NGINX reverse proxy.
+
 This setup is only good for testing and demonstration purposes.  
