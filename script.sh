@@ -5,9 +5,9 @@
 BIND_MOUT_ROOT=$HOME/teamcity-multinode-setup
 ## SQL server
 SQL_CONTAINER_NAME=mysql-server
-MYSQL_PASSWORD=your-secret-pw
+MYSQL_PASSWORD=your-pw
 TC_DB_USER=teamcity
-TC_DB_PASSWORD=your-secret-pw
+TC_DB_PASSWORD=your-pw
 TC_DB_NAME=teamcity
 MYSQL_CONTAINER_NAME=mysql-server
 MYSQL_SERVER_VOLUME=${BIND_MOUT_ROOT}/${SQL_CONTAINER_NAME}/
@@ -31,7 +31,7 @@ JDBC_DRIVER_DOWNLOAD_LINK=https://dev.mysql.com/get/Downloads/Connector-J/mysql-
 # NGINX
 NGINX_CONTAINER_NAME=nginx
 NGINX_CONFIG_PATH=${BIND_MOUT_ROOT}/nginx.conf
-PROXY_SERVER_NAMES="your-proxy-server your-proxy-server.example.com"
+PROXY_SERVER_NAMES="tola-ubuntu tola-ubuntu.labs.intellij.net"
 
 # Create host volumes
 mkdir -p ${NFS_BIND_MOUNT}
@@ -98,7 +98,7 @@ docker run --privileged -u 0 -dit --name ${TC_NODE2_CONTAINER_NAME} \
 --network=teamcity-network \
 -e TEAMCITY_SERVER_OPTS="-Dteamcity.server.nodeId=${TC_NODE2_CONTAINER_NAME} -Dteamcity.server.rootURL=http://${TC_NODE2_CONTAINER_NAME}:8111 -Dteamcity.data.path=/data/teamcity_server/datadir -Dteamcity.node.data.path=/data/teamcity_server/node_datadir" \
 -v ${TC_NODE2_DATA_VOLUME}:/data/teamcity_server/datadir \
--v ${TC_NODE2_DATA_VOLUME}:/opt/teamcity/logs \
+-v ${TC_NODE2_LOGS_VOLUME}:/opt/teamcity/logs \
 -p ${TC_NODE2_PORT}:8111 \
 jetbrains/teamcity-server:${TC_VERSION}
 
